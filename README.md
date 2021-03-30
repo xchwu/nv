@@ -1,1 +1,4 @@
 # nv
+
+nvjpeg
+nvvideodecode
