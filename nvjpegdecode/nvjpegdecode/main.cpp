@@ -34,21 +34,19 @@ vector<char>  read_file(char *file_path)
 int main(int argc, char* argv[])
 {
 	CNVjpegDecoder nvjpeg_decoder;
-	nvjpeg_decoder.initialize(0, 16);
+	nvjpeg_decoder.initialize(0, 1);
 	FileData filedata;
+	FileNames image_name;
 
-	for (size_t i = 0; i < 16; i++)
+	for (size_t i = 0; i < 10; i++)
 	{
 		char filename[100];
 		sprintf_s(filename,100, "%02d.jpg", i);
-		vector<char> img_data = read_file(filename);
-		filedata.push_back(img_data);
+		image_name.push_back(filename);
 	}
 
-	cv::Mat img = nvjpeg_decoder.imread("00.jpg");
-
 	vector<cv::Mat> vImage;
-	nvjpeg_decoder.decode(filedata, vImage);
+	nvjpeg_decoder.decode(image_name, vImage);
 
 	for (cv::Mat image : vImage)
 	{

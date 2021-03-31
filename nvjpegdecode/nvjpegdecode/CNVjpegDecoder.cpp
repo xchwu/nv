@@ -77,6 +77,14 @@ void destory_nvjpegImage_t(nvjpegImage_t &nvjpg_image)
 CNVjpegDecoder::CNVjpegDecoder()
 {
 	_params = (void*)(new decode_params_t);
+
+
+	for (size_t i = 0; i < iout.size(); i++)
+	{
+		destory_nvjpegImage_t(iout[i]);
+		destory_nvjpegImage_t(isz[i]);
+
+	}
 }
 CNVjpegDecoder::~CNVjpegDecoder()
 {
@@ -92,7 +100,7 @@ int CNVjpegDecoder::initialize(int gpu_id, int batch_size)
 	params->batch_size = batch_size;
 	params->dev = gpu_id;
 	params->fmt = NVJPEG_OUTPUT_BGR;
-	// params->batched = true;
+	 params->batched = false;
 
 	checkCudaErrors(cudaSetDevice(gpu_id));
 
@@ -111,6 +119,15 @@ int CNVjpegDecoder::initialize(int gpu_id, int batch_size)
 			params->batch_size, 1, params->fmt));
 
 
+	iout.resize(params->batch_size);
+	isz.resize(params->batch_size);
+	for (size_t i = 0; i < params->batch_size; i++) {
+		for (int c = 0; c < NVJPEG_MAX_COMPONENT; c++) {
+			iout[i].channel[c] = NULL;
+			iout[i].pitch[c] = 0;
+			isz[i].pitch[c] = 0;
+		}
+	}
 
 	return 0;
 }
@@ -211,38 +228,38 @@ int prepare_buffers(FileData &file_data,
 		img_width[i] = widths[0];
 		img_height[i] = heights[0];
 
-		//std::cout << "Processing: " << current_names[i] << std::endl;
-		//std::cout << "Image is " << channels << " channels." << std::endl;
-		//for (int c = 0; c < channels; c++) {
-		//	std::cout << "Channel #" << c << " size: " << widths[c] << " x "
-		//		<< heights[c] << std::endl;
-		//}
-		//switch (subsampling) {
-		//case NVJPEG_CSS_444:
-		//	std::cout << "YUV 4:4:4 chroma subsampling" << std::endl;
-		//	break;
-		//case NVJPEG_CSS_440:
-		//	std::cout << "YUV 4:4:0 chroma subsampling" << std::endl;
-		//	break;
-		//case NVJPEG_CSS_422:
-		//	std::cout << "YUV 4:2:2 chroma subsampling" << std::endl;
-		//	break;
-		//case NVJPEG_CSS_420:
-		//	std::cout << "YUV 4:2:0 chroma subsampling" << std::endl;
-		//	break;
-		//case NVJPEG_CSS_411:
-		//	std::cout << "YUV 4:1:1 chroma subsampling" << std::endl;
-		//	break;
-		//case NVJPEG_CSS_410:
-		//	std::cout << "YUV 4:1:0 chroma subsampling" << std::endl;
-		//	break;
-		//case NVJPEG_CSS_GRAY:
-		//	std::cout << "Grayscale JPEG " << std::endl;
-		//	break;
-		//case NVJPEG_CSS_UNKNOWN:
-		//	std::cout << "Unknown chroma subsampling" << std::endl;
-		//	return EXIT_FAILURE;
-		//}
+		std::cout << "Processing: " << current_names[i] << std::endl;
+		std::cout << "Image is " << channels << " channels." << std::endl;
+		for (int c = 0; c < channels; c++) {
+			std::cout << "Channel #" << c << " size: " << widths[c] << " x "
+				<< heights[c] << std::endl;
+		}
+		switch (subsampling) {
+		case NVJPEG_CSS_444:
+			std::cout << "YUV 4:4:4 chroma subsampling" << std::endl;
+			break;
+		case NVJPEG_CSS_440:
+			std::cout << "YUV 4:4:0 chroma subsampling" << std::endl;
+			break;
+		case NVJPEG_CSS_422:
+			std::cout << "YUV 4:2:2 chroma subsampling" << std::endl;
+			break;
+		case NVJPEG_CSS_420:
+			std::cout << "YUV 4:2:0 chroma subsampling" << std::endl;
+			break;
+		case NVJPEG_CSS_411:
+			std::cout << "YUV 4:1:1 chroma subsampling" << std::endl;
+			break;
+		case NVJPEG_CSS_410:
+			std::cout << "YUV 4:1:0 chroma subsampling" << std::endl;
+			break;
+		case NVJPEG_CSS_GRAY:
+			std::cout << "Grayscale JPEG " << std::endl;
+			break;
+		case NVJPEG_CSS_UNKNOWN:
+			std::cout << "Unknown chroma subsampling" << std::endl;
+			return EXIT_FAILURE;
+		}
 
 		int mul = 1;
 		// in the case of interleaved RGB output, write only to single channel, but
@@ -310,6 +327,126 @@ cv::Mat CNVjpegDecoder::imread(const char *filename)
 	return image;
 }
 
+int read_next_batch(FileNames &image_names, int batch_size,
+	FileNames::iterator &cur_iter, FileData &raw_data,
+	std::vector<size_t> &raw_len, FileNames &current_names) {
+	int counter = 0;
+
+	while (counter < batch_size) {
+		if (cur_iter == image_names.end()) {
+			std::cerr << "Image list is too short to fill the batch, adding files "
+				"from the beginning of the image list"
+				<< std::endl;
+			cur_iter = image_names.begin();
+		}
+
+		if (image_names.size() == 0) {
+			std::cerr << "No valid images left in the input list, exit" << std::endl;
+			return EXIT_FAILURE;
+		}
+
+		// Read an image from disk.
+		std::ifstream input(cur_iter->c_str(),
+			std::ios::in | std::ios::binary | std::ios::ate);
+		if (!(input.is_open())) {
+			std::cerr << "Cannot open image: " << *cur_iter
+				<< ", removing it from image list" << std::endl;
+			image_names.erase(cur_iter);
+			continue;
+		}
+
+		// Get the size
+		std::streamsize file_size = input.tellg();
+		input.seekg(0, std::ios::beg);
+		// resize if buffer is too small
+		if (raw_data[counter].size() < file_size) {
+			raw_data[counter].resize(file_size);
+		}
+		if (!input.read(raw_data[counter].data(), file_size)) {
+			std::cerr << "Cannot read from file: " << *cur_iter
+				<< ", removing it from image list" << std::endl;
+			image_names.erase(cur_iter);
+			continue;
+		}
+		raw_len[counter] = file_size;
+
+		current_names[counter] = *cur_iter;
+
+		counter++;
+		cur_iter++;
+	}
+	return EXIT_SUCCESS;
+}
+int CNVjpegDecoder::decode(FileNames& image_names, std::vector<cv::Mat> &vImage)
+{
+	if (image_names.size() == 0)
+	{
+		return 1;
+	}
+	decode_params_t* params = (decode_params_t*)_params;
+	
+	params->total_images = image_names.size();
+
+	// vector for storing raw files and file lengths
+	FileData file_data(params->batch_size);
+	std::vector<size_t> file_len(params->batch_size);
+	FileNames current_names(params->batch_size);
+	std::vector<int> widths(params->batch_size);
+	std::vector<int> heights(params->batch_size);
+	// we wrap over image files to process total_images of files
+	FileNames::iterator file_iter = image_names.begin();
+
+
+	int total_processed = 0;
+
+	
+	double test_time = 0;
+	int warmup = 0;
+	while (total_processed < params->total_images) {
+		if (read_next_batch(image_names, params->batch_size, file_iter, file_data,
+			file_len, current_names))
+			return EXIT_FAILURE;
+
+		if (prepare_buffers(file_data, file_len, widths, heights, iout, isz,
+			current_names, *params))
+			return EXIT_FAILURE;
+
+		double time;
+		if (decode_images(file_data, file_len, iout, *params, time))
+			return EXIT_FAILURE;
+
+		total_processed += params->batch_size;
+		test_time += time;
+		
+
+		for (size_t i = 0; i <file_data.size(); i++) {
+			int width = widths[i];
+			int height = heights[i];
+			cv::Mat b(cv::Size(widths[i], heights[i]), CV_8UC1);
+			cv::Mat g(cv::Size(widths[i], heights[i]), CV_8UC1);
+			cv::Mat r(cv::Size(widths[i], heights[i]), CV_8UC1);
+			checkCudaErrors(cudaMemcpy2D(b.data, (size_t)width, iout[i].channel[0], (size_t)iout[i].pitch[0],
+				width, height, cudaMemcpyDeviceToHost));
+			checkCudaErrors(cudaMemcpy2D(g.data, (size_t)width, iout[i].channel[1], (size_t)iout[i].pitch[1],
+				width, height, cudaMemcpyDeviceToHost));
+			checkCudaErrors(cudaMemcpy2D(r.data, (size_t)width, iout[i].channel[2], (size_t)iout[i].pitch[2],
+				width, height, cudaMemcpyDeviceToHost));
+			vector<cv::Mat> bgrImage;
+			bgrImage.push_back(b);
+			bgrImage.push_back(g);
+			bgrImage.push_back(r);
+			cv::Mat image;
+			cv::merge(bgrImage, image);
+
+			//cv::imshow("image", image);
+			//cv::waitKey();
+			vImage.push_back(image);
+		}
+	}
+	checkCudaErrors(cudaStreamDestroy(params->stream));
+	return 0;
+
+}
 int CNVjpegDecoder::decode(FileData& filedata, std::vector<cv::Mat> &vImage)
 {
 	if (filedata.size() == 0)
@@ -324,31 +461,13 @@ int CNVjpegDecoder::decode(FileData& filedata, std::vector<cv::Mat> &vImage)
 		params->batched = false;
 	}
 
-
-
-
-	// output buffers
-	std::vector<nvjpegImage_t> iout(filedata.size());
-	// output buffer sizes, for convenience
-	std::vector<nvjpegImage_t> isz(filedata.size());
-
+	
 	std::vector<size_t> file_len(filedata.size());
 	FileNames current_names(filedata.size());
 	std::vector<int> widths(filedata.size());
 	std::vector<int> heights(filedata.size());
 	
-	for (size_t i = 0; i < filedata.size(); i++) {
-		file_len[i] = filedata[i].size();		
-		for (int c = 0; c < NVJPEG_MAX_COMPONENT; c++) {
-			iout[i].channel[c] = NULL;
-			iout[i].pitch[c] = 0;
-			isz[i].pitch[c] = 0;
 
-			isz[i].channel[c] = NULL;
-			isz[i].pitch[c] = 0;
-			isz[i].pitch[c] = 0;
-		}
-	}
 	prepare_buffers(filedata, 
 					file_len,
 					widths, 
@@ -384,12 +503,6 @@ int CNVjpegDecoder::decode(FileData& filedata, std::vector<cv::Mat> &vImage)
 	 }
 
 
-	 for (size_t i = 0; i < iout.size(); i++)
-	 {
-		 destory_nvjpegImage_t(iout[i]);
-		 destory_nvjpegImage_t(isz[i]);
-
-	 }
 
 
 
